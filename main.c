@@ -16,6 +16,7 @@
 #include "game.h"
 #include "mcts.h"
 #include "negamax.h"
+#include "xo_common.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -33,6 +34,8 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine");
 #define NR_KMLDRV 1
 
 static int delay = 100; /* time (in ms) to generate an event */
+static struct xo_board last_board;
+static struct xo_result last_result;
 
 /* Declare kernel module attribute for sysfs */
 
@@ -90,6 +93,8 @@ static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
  * from the interrupt context, readers are serialized using this mutex.
  */
 static DEFINE_MUTEX(read_lock);
+
+static DEFINE_MUTEX(kxo_lock);
 
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
@@ -381,39 +386,39 @@ static void timer_handler(struct timer_list *__timer)
     local_irq_enable();
 }
 
-static ssize_t kxo_read(struct file *file,
-                        char __user *buf,
-                        size_t count,
-                        loff_t *ppos)
+static ssize_t kxo_write(struct file *file,
+                         const char __user *buf,
+                         size_t len,
+                         loff_t *off)
 {
-    unsigned int read;
-    int ret;
-
-    pr_debug("kxo: %s(%p, %zd, %lld)\n", __func__, buf, count, *ppos);
-
-    if (unlikely(!access_ok(buf, count)))
+    if (mutex_lock_interruptible(&kxo_lock))
+        return -ERESTARTSYS;
+    printk(KERN_INFO "kxo_write: len=%zu expect=%zu\n", len,
+           sizeof(struct xo_board));
+    if (len != sizeof(struct xo_board))
+        return -EINVAL;
+    if (copy_from_user(&last_board, buf, sizeof(struct xo_board)))
         return -EFAULT;
 
-    if (mutex_lock_interruptible(&read_lock))
+    last_result.move = mcts(last_board.table, last_board.player);
+
+    mutex_unlock(&kxo_lock);
+    return sizeof(struct xo_board);
+}
+
+static ssize_t kxo_read(struct file *file,
+                        char __user *buf,
+                        size_t len,
+                        loff_t *off)
+{
+    if (mutex_lock_interruptible(&kxo_lock))
         return -ERESTARTSYS;
-
-    do {
-        ret = kfifo_to_user(&rx_fifo, buf, count, &read);
-        if (unlikely(ret < 0))
-            break;
-        if (read)
-            break;
-        if (file->f_flags & O_NONBLOCK) {
-            ret = -EAGAIN;
-            break;
-        }
-        ret = wait_event_interruptible(rx_wait, kfifo_len(&rx_fifo));
-    } while (ret == 0);
-    pr_debug("kxo: %s: out %u/%u bytes\n", __func__, read, kfifo_len(&rx_fifo));
-
-    mutex_unlock(&read_lock);
-
-    return ret ? ret : read;
+    if (len != sizeof(struct xo_result))
+        return -EINVAL;
+    if (copy_to_user(buf, &last_result, sizeof(struct xo_result)))
+        return -EFAULT;
+    mutex_unlock(&kxo_lock);
+    return sizeof(struct xo_result);
 }
 
 static atomic_t open_cnt;
@@ -443,6 +448,7 @@ static int kxo_release(struct inode *inode, struct file *filp)
 
 static const struct file_operations kxo_fops = {
     .read = kxo_read,
+    .write = kxo_write,
     .llseek = no_llseek,
     .open = kxo_open,
     .release = kxo_release,

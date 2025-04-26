@@ -1,4 +1,5 @@
 TARGET := kxo
+kxo-objs = main.o game.o xoroshiro.o mcts.o negamax.o zobrist.o
 obj-m := $(TARGET).o
 
 CCFLAGS := -std=gnu99 -Wno-declaration-after-statement
