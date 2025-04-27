@@ -189,9 +189,6 @@ static void ai_two_work_func(struct work_struct *w)
     put_cpu();
 }
 
-/* Workqueue for asynchronous bottom-half processing */
-static struct workqueue_struct *kxo_workqueue;
-
 /* Work item: holds a pointer to the function that is going to be executed
  * asynchronously.
  */
@@ -250,9 +247,6 @@ static int kxo_release(struct inode *inode, struct file *filp)
     pr_debug("kxo: %s\n", __func__);
     if (atomic_dec_and_test(&open_cnt)) {
         del_timer_sync(&timer);
-        if (kxo_workqueue) {
-            flush_workqueue(kxo_workqueue);
-        }
         fast_buf_clear();
     }
     pr_info("release, current cnt: %d\n", atomic_read(&open_cnt));
@@ -334,10 +328,6 @@ static void __exit kxo_exit(void)
     dev_t dev_id = MKDEV(major, 0);
 
     del_timer_sync(&timer);
-    if (kxo_workqueue) {
-        flush_workqueue(kxo_workqueue);
-    }
-    destroy_workqueue(kxo_workqueue);
     vfree(fast_buf.buf);
     device_destroy(kxo_class, dev_id);
     class_destroy(kxo_class);
