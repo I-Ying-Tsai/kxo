@@ -14,9 +14,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "ai_mcts.h"
-#include "ai_negamax.h"
 #include "game_util.h"
+#include "xo_common.h"
 
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
@@ -110,27 +109,26 @@ struct cr {
                                  errno == EINPROGRESS || errno == EINTR)))
 
 typedef cr_queue(uint8_t, 4096) byte_queue_t;
+int device_fd = -1;
 
-game_table_t tables[2];
+char tables[2][XO_BOARD_SIZE];
 int turns[2] = {1, 1};
 bool finished[2] = {false, false};
 volatile bool should_redraw = false;
 ssize_t written;
 
-int mcts(const char *table, char player);
-move_t negamax_predict(char *table, char player);
-
 void draw_table(const char *t)
 {
-    for (int i = 0; i < UTIL_BOARD_SIZE; i++) {
-        for (int j = 0; j < UTIL_BOARD_SIZE; j++) {
-            putchar(t[i * UTIL_BOARD_SIZE + j]);
-            if (j < UTIL_BOARD_SIZE - 1)
+    int N = 4;
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            putchar(t[i * N + j]);
+            if (j < N - 1)
                 putchar('|');
         }
         putchar('\n');
-        if (i < UTIL_BOARD_SIZE - 1) {
-            for (int j = 0; j < UTIL_BOARD_SIZE * 2 - 1; j++)
+        if (i < N - 1) {
+            for (int j = 0; j < N * 2 - 1; j++)
                 putchar('-');
             putchar('\n');
         }
@@ -154,6 +152,7 @@ cr_proto(stdin_loop, byte_queue_t *out)
     cr_end();
 }
 
+/*
 cr_proto(socket_write_loop, byte_queue_t *in, int fd)
 {
     cr_local uint8_t *b;
@@ -179,6 +178,7 @@ cr_proto(socket_read_loop, int fd)
     }
     cr_end();
 }
+*/
 
 static int nonblock(int fd)
 {
@@ -275,7 +275,7 @@ cr_proto(display_loop)
         printf("\033[H\033[J");
         for (int i = 0; i < 2; i++) {
             printf("=== Game %d ===\n", i + 1);
-            draw_table(tables[i].grid);
+            draw_table(tables[i]);
             printf("\n");
         }
         time_t now = time(NULL);
@@ -284,7 +284,7 @@ cr_proto(display_loop)
         strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
         printf("Time: %s\n", time_str);
 
-        usleep(100000);
+        // usleep(100000);
         should_redraw = false;
         cr_yield;
     }
@@ -299,13 +299,29 @@ cr_context(ai2_loop_1);
 cr_proto(ai1_loop_0)
 {
     cr_local int move;
+    cr_local struct xo_board board;
+    cr_local struct xo_result result;
+    cr_local ssize_t wret, rret;
     cr_begin();
     while (!finished[0]) {
         cr_wait(turns[0] == 1);
-        move = mcts(tables[0].grid, 'O');
+
+        memcpy(board.table, tables[0], XO_BOARD_SIZE);  // 16 for 4x4
+        board.player = 'O';
+        wret = write(device_fd, &board, sizeof(board));
+        if (wret != sizeof(board)) {
+            perror("write /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        rret = read(device_fd, &result, sizeof(result));
+        if (rret != sizeof(result)) {
+            perror("read /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        move = result.move;
         if (move != -1)
-            tables[0].grid[move] = 'O';
-        if (check_win(tables[0].grid) != ' ')
+            tables[0][move] = 'O';
+        if (check_win(tables[0]) != ' ')
             finished[0] = true;
         should_redraw = true;
         turns[0] = 2;
@@ -316,13 +332,29 @@ cr_proto(ai1_loop_0)
 cr_proto(ai2_loop_0)
 {
     cr_local int move;
+    cr_local struct xo_board board;
+    cr_local struct xo_result result;
+    cr_local ssize_t wret, rret;
     cr_begin();
     while (!finished[0]) {
         cr_wait(turns[0] == 2);
-        move = negamax_predict(tables[0].grid, 'X').move;
+
+        memcpy(board.table, tables[0], XO_BOARD_SIZE);
+        board.player = 'X';
+        wret = write(device_fd, &board, sizeof(board));
+        if (wret != sizeof(board)) {
+            perror("write /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        rret = read(device_fd, &result, sizeof(result));
+        if (rret != sizeof(result)) {
+            perror("read /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        move = result.move;
         if (move != -1)
-            tables[0].grid[move] = 'X';
-        if (check_win(tables[0].grid) != ' ')
+            tables[0][move] = 'X';
+        if (check_win(tables[0]) != ' ')
             finished[0] = true;
         should_redraw = true;
         turns[0] = 1;
@@ -333,13 +365,29 @@ cr_proto(ai2_loop_0)
 cr_proto(ai1_loop_1)
 {
     cr_local int move;
+    cr_local struct xo_board board;
+    cr_local struct xo_result result;
+    cr_local ssize_t wret, rret;
     cr_begin();
     while (!finished[1]) {
         cr_wait(turns[1] == 1);
-        move = mcts(tables[1].grid, 'O');
+
+        memcpy(board.table, tables[1], XO_BOARD_SIZE);
+        board.player = 'O';
+        wret = write(device_fd, &board, sizeof(board));
+        if (wret != sizeof(board)) {
+            perror("write /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        rret = read(device_fd, &result, sizeof(result));
+        if (rret != sizeof(result)) {
+            perror("read /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        move = result.move;
         if (move != -1)
-            tables[1].grid[move] = 'O';
-        if (check_win(tables[1].grid) != ' ')
+            tables[1][move] = 'O';
+        if (check_win(tables[1]) != ' ')
             finished[1] = true;
         should_redraw = true;
         turns[1] = 2;
@@ -350,13 +398,29 @@ cr_proto(ai1_loop_1)
 cr_proto(ai2_loop_1)
 {
     cr_local int move;
+    cr_local struct xo_board board;
+    cr_local struct xo_result result;
+    cr_local ssize_t wret, rret;
     cr_begin();
     while (!finished[1]) {
         cr_wait(turns[1] == 2);
-        move = negamax_predict(tables[1].grid, 'X').move;
+
+        memcpy(board.table, tables[1], XO_BOARD_SIZE);
+        board.player = 'X';
+        wret = write(device_fd, &board, sizeof(board));
+        if (wret != sizeof(board)) {
+            perror("write /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        rret = read(device_fd, &result, sizeof(result));
+        if (rret != sizeof(result)) {
+            perror("read /dev/kxo failed");
+            cr_exit(CR_FINISHED);
+        }
+        move = result.move;
         if (move != -1)
-            tables[1].grid[move] = 'X';
-        if (check_win(tables[1].grid) != ' ')
+            tables[1][move] = 'X';
+        if (check_win(tables[1]) != ' ')
             finished[1] = true;
         should_redraw = true;
         turns[1] = 1;
@@ -366,7 +430,7 @@ cr_proto(ai2_loop_1)
 
 void reset_game(int i)
 {
-    memset(tables[i].grid, ' ', UTIL_N_GRIDS);
+    memset(tables[i], ' ', XO_BOARD_SIZE);
     turns[i] = 1;
     finished[i] = false;
     should_redraw = true;
@@ -381,13 +445,15 @@ void reset_game(int i)
         cr_context(ai2_loop_1) = cr_context_init();
         break;
     }
-
-    mcts_init();
-    negamax_init();
 }
 
 int main(int argc, char *argv[])
 {
+    device_fd = open(XO_DEVICE_FILE, O_RDWR);
+    if (device_fd < 0) {
+        perror("open /dev/kxo");
+        return 1;
+    }
     FILE *fp = fopen(XO_STATUS_FILE, "r");
     if (!fp) {
         printf("kxo status : not loaded\n");
@@ -419,8 +485,8 @@ int main(int argc, char *argv[])
     cr_context(keyboard_loop) = cr_context_init();
     cr_context(display_loop) = cr_context_init();
 
-    memset(tables[0].grid, ' ', UTIL_N_GRIDS);
-    memset(tables[1].grid, ' ', UTIL_N_GRIDS);
+    memset(tables[0], ' ', XO_BOARD_SIZE);
+    memset(tables[1], ' ', XO_BOARD_SIZE);
     turns[0] = 1;
     turns[1] = 1;
 
@@ -443,12 +509,12 @@ int main(int argc, char *argv[])
 
         if (finished[0]) {
             reset_game(0);
-            usleep(50000);
+            // usleep(50000);
         }
 
         if (finished[1]) {
             reset_game(1);
-            usleep(50000);
+            // usleep(50000);
         }
     }
 

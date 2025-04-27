@@ -12,7 +12,7 @@ typedef struct {
     char grid[UTIL_N_GRIDS];
 } game_table_t;
 
-typedef uint32_t util_fixed_point_t;
+typedef unsigned util_fixed_point_t;
 
 typedef struct {
     int i_shift;
