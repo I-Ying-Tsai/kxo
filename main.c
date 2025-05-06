@@ -209,7 +209,27 @@ static ssize_t kxo_write(struct file *file,
     if (copy_from_user(&last_board, buf, sizeof(struct xo_board)))
         return -EFAULT;
 
-    last_result.move = mcts(last_board.table, last_board.player);
+    int move;
+    if (last_board.player == 'O') {
+        printk(KERN_INFO "Player O using MCTS algorithm\n");
+        move = mcts(last_board.table, 'O');
+    } else if (last_board.player == 'X') {
+        printk(KERN_INFO "Player X using Negamax algorithm\n");
+        move = negamax_predict(last_board.table, 'X').move;
+    } else {
+        printk(KERN_ERR "Invalid player: %c\n", last_board.player);
+        printk(KERN_ERR "Invalid player: %c\n", last_board.player);
+        return -EINVAL;
+    }
+
+    if (move != -1) {
+        printk(KERN_INFO "Player %c chose move: %d\n", last_board.player, move);
+        last_board.table[move] = last_board.player;
+    } else {
+        printk(KERN_ERR "Invalid move selected: %d\n", move);
+    }
+
+    last_result.move = move;
 
     mutex_unlock(&kxo_lock);
     return sizeof(struct xo_board);
